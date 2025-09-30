@@ -19,6 +19,10 @@ import jax
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
+try:
+  import deeplake
+except ImportError:
+  deeplake = None
 
 def get_data_scaler(config):
   """Data normalizer. Assume data are always in [0, 1]."""
@@ -117,7 +121,8 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
 
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
-      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+      img = tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+      return img
 
   elif config.data.dataset == 'MNIST':
     dataset_builder = tfds.builder('mnist')
@@ -130,7 +135,36 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       return img
 
   elif config.data.dataset == 'TINYIMAGENET':
-    dataset_builder = tfds.builder('tiny_imagenet')
+    if deeplake is None:
+      raise ImportError('Deeplake is required for TINYIMAGENET dataset. Please install deeplake.')
+    deeplake_path = config.data.get('deeplake_path', 'hub://activeloop/tiny-imagenet-train')
+    deeplake_path_val = config.data.get('deeplake_val_path', 'hub://activeloop/tiny-imagenet-validation')
+    train_ds_raw = deeplake.load(deeplake_path)
+    eval_ds_raw = deeplake.load(deeplake_path_val)
+
+    limit = getattr(config.data, 'num_samples', None)
+
+    def dl_to_tf(ds, split_limit=None):
+      def gen():
+        count = 0
+        for sample in ds:
+          img = sample['image'].numpy()
+          lbl = sample['labels'].numpy()
+          lbl = int(lbl if np.isscalar(lbl) else np.array(lbl).squeeze())
+          yield {'image': img, 'label': lbl}
+          count += 1
+          if split_limit is not None and count >= split_limit:
+            break
+      output_signature = {
+        'image': tf.TensorSpec(shape=(None, None, None), dtype=tf.uint8),
+        'label': tf.TensorSpec(shape=(), dtype=tf.int32)
+      }
+      return tf.data.Dataset.from_generator(gen, output_signature=output_signature)
+
+    dataset_builder = {
+      'train': dl_to_tf(train_ds_raw, limit),
+      'validation': dl_to_tf(eval_ds_raw)
+    }
     train_split_name = 'train'
     eval_split_name = 'validation'
 
