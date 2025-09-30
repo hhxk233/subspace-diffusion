@@ -141,7 +141,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
 
       deeplake_uris = {
           'train': getattr(config.data, 'deeplake_train_uri', 'hub://activeloop/tiny-imagenet-train'),
-          'validation': getattr(config.data, 'deeplake_validation_uri', 'hub://activeloop/tiny-imagenet-validation'),
+          'validation': getattr(config.data, 'deeplake_validation_uri', 'hub://activeloop/tiny-imagenet-test'),
           'test': getattr(config.data, 'deeplake_test_uri', 'hub://activeloop/tiny-imagenet-test')
       }
 
@@ -162,10 +162,24 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
             if max_examples is not None and count >= max_examples:
               break
             image = sample['image'].numpy()
-            label = sample['labels'].numpy()
-            if isinstance(label, np.ndarray):
-              label = label.reshape(-1)[0]
-            yield dict(image=image.astype(np.uint8), label=np.int64(label))
+            if image.ndim == 2:
+              image = np.expand_dims(image, -1)
+            if image.shape[-1] == 1:
+              image = np.repeat(image, 3, axis=-1)
+            elif image.shape[-1] > 3:
+              image = image[..., :3]
+
+            label_tensor = None
+            for key in ('labels', 'label', 'class_id', 'targets'):
+              if key in sample:
+                label_tensor = sample[key].numpy()
+                break
+            if label_tensor is None:
+              label = np.int64(-1)
+            else:
+              label_np = np.array(label_tensor).reshape(-1)
+              label = np.int64(label_np[0])
+            yield dict(image=image.astype(np.uint8), label=label)
             count += 1
 
         def preprocess_sample(d):
