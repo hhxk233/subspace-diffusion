@@ -129,6 +129,15 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       img = tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
       return img
 
+  elif config.data.dataset == 'TINYIMAGENET':
+    dataset_builder = tfds.builder('tiny_imagenet')
+    train_split_name = 'train'
+    eval_split_name = 'validation'
+
+    def resize_op(img):
+      img = tf.image.convert_image_dtype(img, tf.float32)
+      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+
   elif config.data.dataset == 'CELEBA':
     dataset_builder = tfds.builder('celeb_a')
     train_split_name = 'train'
