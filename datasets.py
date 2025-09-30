@@ -168,6 +168,14 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
             yield dict(image=image.astype(np.uint8), label=np.int64(label))
             count += 1
 
+        def preprocess_sample(d):
+          img = resize_op(d['image'])
+          if config.data.random_flip and not evaluation and split == 'train':
+            img = tf.image.random_flip_left_right(img)
+          if uniform_dequantization:
+            img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+          return dict(image=img, label=d['label'])
+
         dataset_options = tf.data.Options()
         dataset_options.experimental_optimization.map_parallelization = True
         dataset_options.experimental_threading.private_threadpool_size = 48
@@ -183,7 +191,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
             effective_buffer = min(max_examples, shuffle_buffer_size)
           ds_tf = ds_tf.shuffle(effective_buffer, reshuffle_each_iteration=True)
 
-        ds_tf = ds_tf.map(preprocess_fn, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        ds_tf = ds_tf.map(preprocess_sample, num_parallel_calls=tf.data.experimental.AUTOTUNE)
         ds_tf = ds_tf.batch(batch_size, drop_remainder=True)
         return ds_tf.prefetch(prefetch_size)
 
