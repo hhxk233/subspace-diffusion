@@ -19,9 +19,10 @@ import jax
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
+
 try:
   import deeplake
-except ImportError:
+except ImportError:  # pragma: no cover - handled at runtime
   deeplake = None
 
 def get_data_scaler(config):
@@ -121,8 +122,7 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
 
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
-      img = tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
-      return img
+      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
 
   elif config.data.dataset == 'MNIST':
     dataset_builder = tfds.builder('mnist')
@@ -135,42 +135,73 @@ def get_dataset(config, uniform_dequantization=False, evaluation=False):
       return img
 
   elif config.data.dataset == 'TINYIMAGENET':
-    if deeplake is None:
-      raise ImportError('Deeplake is required for TINYIMAGENET dataset. Please install deeplake.')
-    deeplake_path = config.data.get('deeplake_path', 'hub://activeloop/tiny-imagenet-train')
-    deeplake_path_val = config.data.get('deeplake_val_path', 'hub://activeloop/tiny-imagenet-validation')
-    train_ds_raw = deeplake.load(deeplake_path)
-    eval_ds_raw = deeplake.load(deeplake_path_val)
+    if getattr(config.data, 'use_deeplake', False):
+      if deeplake is None:
+        raise ImportError('DeepLake is not installed. Please install deeplake to use the TinyImageNet DeepLake loader.')
 
-    limit = getattr(config.data, 'num_samples', None)
-
-    def dl_to_tf(ds, split_limit=None):
-      def gen():
-        count = 0
-        for sample in ds:
-          img = sample['image'].numpy()
-          lbl = sample['labels'].numpy()
-          lbl = int(lbl if np.isscalar(lbl) else np.array(lbl).squeeze())
-          yield {'image': img, 'label': lbl}
-          count += 1
-          if split_limit is not None and count >= split_limit:
-            break
-      output_signature = {
-        'image': tf.TensorSpec(shape=(None, None, None), dtype=tf.uint8),
-        'label': tf.TensorSpec(shape=(), dtype=tf.int32)
+      deeplake_uris = {
+          'train': getattr(config.data, 'deeplake_train_uri', 'hub://activeloop/tiny-imagenet-train'),
+          'validation': getattr(config.data, 'deeplake_validation_uri', 'hub://activeloop/tiny-imagenet-validation'),
+          'test': getattr(config.data, 'deeplake_test_uri', 'hub://activeloop/tiny-imagenet-test')
       }
-      return tf.data.Dataset.from_generator(gen, output_signature=output_signature)
 
-    dataset_builder = {
-      'train': dl_to_tf(train_ds_raw, limit),
-      'validation': dl_to_tf(eval_ds_raw)
-    }
-    train_split_name = 'train'
-    eval_split_name = 'validation'
+      def resize_op(img):
+        img = tf.image.convert_image_dtype(img, tf.float32)
+        return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
 
-    def resize_op(img):
-      img = tf.image.convert_image_dtype(img, tf.float32)
-      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+      def build_deeplake_dataset(split, max_examples=None, shuffle=True):
+        uri = deeplake_uris.get(split, split)
+        ds = deeplake.load(uri, read_only=True)
+
+        image_spec = tf.TensorSpec(shape=(None, None, None), dtype=tf.uint8)
+        label_spec = tf.TensorSpec(shape=(), dtype=tf.int64)
+
+        def generator():
+          count = 0
+          for sample in ds:
+            if max_examples is not None and count >= max_examples:
+              break
+            image = sample['image'].numpy()
+            label = sample['labels'].numpy()
+            if isinstance(label, np.ndarray):
+              label = label.reshape(-1)[0]
+            yield dict(image=image.astype(np.uint8), label=np.int64(label))
+            count += 1
+
+        dataset_options = tf.data.Options()
+        dataset_options.experimental_optimization.map_parallelization = True
+        dataset_options.experimental_threading.private_threadpool_size = 48
+        dataset_options.experimental_threading.max_intra_op_parallelism = 1
+
+        ds_tf = tf.data.Dataset.from_generator(generator, output_signature={'image': image_spec, 'label': label_spec})
+        ds_tf = ds_tf.with_options(dataset_options)
+        ds_tf = ds_tf.repeat(count=num_epochs)
+
+        if shuffle:
+          effective_buffer = shuffle_buffer_size
+          if max_examples is not None:
+            effective_buffer = min(max_examples, shuffle_buffer_size)
+          ds_tf = ds_tf.shuffle(effective_buffer, reshuffle_each_iteration=True)
+
+        ds_tf = ds_tf.map(preprocess_fn, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        ds_tf = ds_tf.batch(batch_size, drop_remainder=True)
+        return ds_tf.prefetch(prefetch_size)
+
+      train_limit = getattr(config.data, 'deeplake_max_examples', None)
+      eval_limit = getattr(config.data, 'deeplake_eval_max_examples', None)
+      eval_split = getattr(config.data, 'deeplake_eval_split', 'validation')
+
+      train_ds = build_deeplake_dataset('train', max_examples=train_limit, shuffle=not evaluation)
+      eval_ds = build_deeplake_dataset(eval_split, max_examples=eval_limit, shuffle=False)
+      return train_ds, eval_ds, None
+    else:
+      dataset_builder = tfds.builder('tiny_imagenet')
+      train_split_name = 'train'
+      eval_split_name = 'validation'
+
+      def resize_op(img):
+        img = tf.image.convert_image_dtype(img, tf.float32)
+        return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
 
   elif config.data.dataset == 'CELEBA':
     dataset_builder = tfds.builder('celeb_a')

@@ -25,9 +25,10 @@ def get_config():
   data.random_flip = True
   data.centered = False
   data.num_channels = 3
-  data.num_samples = 20000
-  data.deeplake_path = 'hub://activeloop/tiny-imagenet-train'
-  data.deeplake_val_path = 'hub://activeloop/tiny-imagenet-validation'
+  data.use_deeplake = True
+  data.deeplake_max_examples = 20000
+  data.deeplake_eval_split = 'validation'
+  data.deeplake_eval_max_examples = None
 
   # model
   model = config.model
